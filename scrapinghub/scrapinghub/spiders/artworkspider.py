@@ -5,8 +5,6 @@ class ArtworkspiderSpider(scrapy.Spider):
     allowed_domains = ["pstrial-2019-12-16.toscrape.com"]
     start_urls = ["http://pstrial-2019-12-16.toscrape.com/browse/insunsh/"]
 
-    
-    
     def parse(self, response):
         # Extract and follow subcategory links
         subcats = response.css('div#subcats a::attr(href)').getall()
