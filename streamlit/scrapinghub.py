@@ -14,14 +14,11 @@ st.markdown(
     Scrapinghub Insights is an app that was built specifically for
     displaying data from Scrapinghub with Streamlit.
     **👈 Select an option from the sidebar** to see some insights.
-    ### Want to learn more?
-    - Check out [streamlit.io](https://streamlit.io)
-    - Jump into our [documentation](https://docs.streamlit.io)
-    - Ask a question in our [community
-        forums](https://discuss.streamlit.io)
-    ### See more complex demos
-    - Use a neural net to [analyze the Udacity Self-driving Car Image
-        Dataset](https://github.com/streamlit/demo-self-driving)
-    - Explore a [New York City rideshare dataset](https://github.com/streamlit/demo-uber-nyc-pickups)
+    
+    This project is a showcase of a full stack data pipeline built with Docker,
+    Apache Airflow, Scrapy, and Streamlit. The pipeline is used to scrape art
+    data from scrapinghub, process it, and then serve it in a web app built with
+    Streamlit. The web app includes a table of scraped data, and a few
+    interactive charts.
 """
 )
