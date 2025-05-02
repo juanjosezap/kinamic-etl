@@ -26,8 +26,8 @@ class ArtworksSpider(scrapy.Spider):
         ROBOTSTXT_OBEY = False,
         DOWNLOADER_MIDDLEWARES = {
             "scrapinghub.middlewares.ScrapeOpsFakeBrowserHeaderAgentMiddleware": 543,
-            # "scrapinghub.middlewares.FreeProxyMiddleware": 749,
-            # "scrapinghub.middlewares.CustomRetryMiddleware": 750
+            "scrapinghub.middlewares.FreeProxyMiddleware": 749,
+            "scrapinghub.middlewares.CustomRetryMiddleware": 750
         }
     )
 
