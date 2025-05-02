@@ -76,6 +76,9 @@ class ArtworksPipeline:
         if dimensions:
             item["width"] = dimensions[0][0]
             item["height"] = dimensions[0][1]
+        else:
+            item["width"] = None
+            item["height"] = None
 
         return item
 
