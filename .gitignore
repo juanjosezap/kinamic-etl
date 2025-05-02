@@ -1,3 +1,5 @@
 py311/*
 __pycache__/
 scrapinghub/.env
+mysql/data/*
+logs/*
