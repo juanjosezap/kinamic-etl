@@ -5,3 +5,4 @@ sqlalchemy==1.4.50
 scrapy_proxy_pool
 scrapy-playwright
 mysql-connector-python
+streamlit
