@@ -1,9 +1,13 @@
 from itemadapter import ItemAdapter
 from datetime import datetime
 import re
+import requests
+import mysql.connector
+import os
+
 class ArtworksPipeline:
 
-    def process_artist(self, artists: str) -> list[str]:
+    def process_artist(self, artists: str) -> [str]:
         artist_list = []
 
         if artists:
@@ -42,7 +46,10 @@ class ArtworksPipeline:
         return date_obj.strftime("%Y-%m-%d")
         
     def process_price(self, price: str) -> float:
-        return float(price.replace("$", ""))
+        try:
+            return float(price.replace("$", ""))
+        except:
+            return 0
 
 
     def extract_cm_dimensions(self, dimensions: str):
@@ -55,13 +62,10 @@ class ArtworksPipeline:
     def process_item(self, item, spider):
 
         adapter = ItemAdapter(item)
-
         artists_list = self.process_artist(adapter.get("artist"))
         
         if len(artists_list) > 0: 
             item["artist"] = artists_list
-        else:
-            item.pop("artist")
 
         item["categories"] = self.process_categories(adapter.get("categories"))
 
@@ -74,3 +78,119 @@ class ArtworksPipeline:
             item["height"] = dimensions[0][1]
 
         return item
+
+class ProxiesPipeline:
+    def open_spider(self, spider):
+        # Open the file when the spider starts
+        current_path = os.getcwd()
+        print(f'----> {current_path}')
+        self.file = open('proxies.txt', 'w', encoding='utf-8')
+
+    def close_spider(self, spider):
+        # Close the file when the spider finishes
+        self.file.close()
+
+    def test_proxy(self, proxy: str):
+        try:
+            response = requests.get("https://httpbin.org/ip", 
+                proxies={"http": proxy},
+                timeout=10
+            )
+            return response.status_code == 200
+        except:
+            return False
+
+    def process_last_checked(self, last_checked: str) -> str:
+        
+        last_checked = last_checked.replace(" ago", "").strip()
+        number = int(last_checked.split(" ")[0])
+        unit = last_checked.split(" ")[1]
+
+        if unit == "mins":
+            seconds = number * 60
+        else:
+            seconds = number
+
+        if seconds <= 300:
+            return True
+        else:
+            return False
+
+    def process_item(self, item, spider):
+        # Write the item data to the file
+        if not self.process_last_checked(item["last_checked"]):
+            return
+        if not self.test_proxy(item["proxy"]):
+            return
+        line = f"{item['proxy']}\n"
+        self.file.write(line)
+        return item
+
+class SaveToMySQLPipeline:
+
+    def __init__(self):
+        self.conn = mysql.connector.connect(
+            host = 'localhost',
+            user = 'scrapy',
+            passwd = 'scrapy',
+            database = 'scrapinghub_db'
+        )
+        self.curr = self.conn.cursor()
+
+        # CREATE TABLE IF NOT EXISTS
+        self.curr.execute("""
+        CREATE TABLE IF NOT EXISTS artworks (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            url VARCHAR(255) NOT NULL,
+            artist VARCHAR(255) NOT NULL,
+            title VARCHAR(255) NOT NULL,
+            description TEXT,
+            image VARCHAR(255),
+            categories VARCHAR(255),
+            price DECIMAL(10, 2),
+            dated VARCHAR(50),
+            date_added VARCHAR(50),
+            location VARCHAR(50),
+            width DECIMAL(10, 2),
+            height DECIMAL(10, 2),
+            medium VARCHAR(100),
+            dimensions VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)    
+
+
+    def process_item(self, item, spider):
+        if 'artist' not in item.keys() or item['artist'] == [] or item['artist'] == None:
+            artist = ""
+        else:
+            artist = item['artist'][0]
+
+        categories = "-".join(item['categories'])
+        self.curr.execute("""
+        INSERT INTO artworks (url, artist, title, description, image, categories, price, dated, date_added, location, width, height, medium, dimensions)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            item['url'],
+            artist,
+            item['title'],
+            item['description'],
+            item['image'],
+            categories,
+            item['price'],
+            item['dated'],
+            item['date_added'],
+            item['location'],
+            item['width'],
+            item['height'],
+            item['medium'],
+            item['dimensions']
+        ))
+        self.conn.commit()
+
+        return item
+    
+    def close_spider(self, spider):
+        self.curr.close()
+        self.conn.close()

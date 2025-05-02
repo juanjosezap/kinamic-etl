@@ -8,9 +8,14 @@ from scrapy import signals
 # useful for handling different item types with a single interface
 from itemadapter import is_item, ItemAdapter
 from urllib.parse import urlencode
-from random import randint
+import random
 import requests
-
+import itertools
+from scrapy.exceptions import NotConfigured
+from scrapy.downloadermiddlewares.useragent import UserAgentMiddleware
+from scrapy.downloadermiddlewares.retry import RetryMiddleware
+from scrapy.utils.response import response_status_message
+import json
 
 class ScrapinghubSpiderMiddleware:
     # Not all methods need to be defined. If a method is not defined,
@@ -129,7 +134,7 @@ class ScrapeOpsFakeBrowserHeaderAgentMiddleware:
         self.headers_list = json_response.get('result', [])
 
     def _get_random_browser_header(self):
-        random_index = randint(0, len(self.headers_list) - 1)
+        random_index = random.randint(0, len(self.headers_list) - 1)
         return self.headers_list[random_index]
 
     def _scrapeops_fake_browser_headers_enabled(self):
@@ -151,3 +156,226 @@ class ScrapeOpsFakeBrowserHeaderAgentMiddleware:
         request.headers['accept'] = random_browser_header.get('accept')
         request.headers['user-agent'] = random_browser_header.get('user-agent')
         request.headers['upgrade-insecure-requests'] = random_browser_header.get('upgrade-insecure-requests')
+
+class ProxyRotationMiddleware:
+    def __init__(self, proxy_list):
+        self.proxy_cycle = itertools.cycle(proxy_list)
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        # Retrieve the proxy list path from settings
+        proxy_list_path = crawler.settings.get('PROXY_LIST')
+        if not proxy_list_path:
+            raise NotConfigured('PROXY_LIST setting is missing.')
+        
+        # Read proxies from the file
+        try:
+            with open(proxy_list_path, 'r') as f:
+                proxy_list = [line.strip() for line in f if line.strip()]
+        except IOError:
+            raise NotConfigured(f'Failed to read proxy file: {proxy_list_path}')
+        
+        if not proxy_list:
+            raise NotConfigured('Proxy list is empty.')
+        
+        return cls(proxy_list)
+
+    def process_request(self, request, spider):
+        # Assign the next proxy in the cycle
+        request.meta['proxy'] = next(self.proxy_cycle)
+
+
+
+class FreeProxyMiddleware:
+    """
+    Middleware to use free proxies from various sources
+    """
+    
+    def __init__(self, settings):
+        # Maximum number of retries for each proxy before fetching new ones
+        self.max_retry_times = settings.getint('RETRY_TIMES', 2)
+        self.proxies = []
+        self.proxy_index = 0
+        self.retry_count = {}
+        # Proxy sources configuration - customize these based on your needs
+        self.proxy_sources = {
+            'free_proxy_list': 'https://free-proxy-list.net/',
+            'proxyscrape': 'https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all'
+        }
+    
+    @classmethod
+    def from_crawler(cls, crawler):
+        middleware = cls(crawler.settings)
+        crawler.signals.connect(middleware.spider_opened, signal=signals.spider_opened)
+        return middleware
+    
+    def spider_opened(self, spider):
+        self.fetch_proxies(spider)
+    
+    def fetch_proxies(self, spider):
+        """Fetch proxies from free proxy services"""
+        proxies = []
+        
+        # Method 1: Using free-proxy-list.net
+        try:
+            response = requests.get('https://free-proxy-list.net/')
+            if response.status_code == 200:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                table = soup.find('table', {'id': 'proxylisttable'})
+                if table:
+                    for row in table.tbody.find_all('tr'):
+                        cols = row.find_all('td')
+                        if len(cols) >= 7:
+                            ip = cols[0].text.strip()
+                            port = cols[1].text.strip()
+                            https = cols[6].text.strip()
+                            if https == 'yes':
+                                proxy = f'https://{ip}:{port}'
+                            else:
+                                proxy = f'http://{ip}:{port}'
+                            proxies.append(proxy)
+                    print(f"Fetched {len(proxies)} proxies from free-proxy-list.net")
+        except Exception as e:
+            print(f"Error fetching proxies from free-proxy-list.net: {e}")
+        
+        # Method 2: Using proxyscrape.com
+        try:
+            response = requests.get('https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all')
+            if response.status_code == 200:
+                proxy_list = response.text.strip().split('\r\n')
+                for proxy in proxy_list:
+                    if proxy:
+                        proxies.append(f'http://{proxy}')
+                print(f"Fetched {len(proxy_list)} proxies from proxyscrape.com")
+        except Exception as e:
+            print(f"Error fetching proxies from proxyscrape.com: {e}")
+        
+        # Method 3: Using PubProxy (alternative)
+        try:
+            response = requests.get('http://pubproxy.com/api/proxy?limit=20&format=json&https=true')
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data:
+                    for item in data['data']:
+                        proxy = f"{item['type']}://{item['ip']}:{item['port']}"
+                        proxies.append(proxy)
+                    print(f"Fetched {len(data['data'])} proxies from pubproxy.com")
+        except Exception as e:
+            print(f"Error fetching proxies from pubproxy.com: {e}")
+        
+        if proxies:
+            self.proxies = proxies
+            self.proxy_index = 0
+            random.shuffle(self.proxies)
+            print(f"Total proxies fetched: {len(self.proxies)}")
+        else:
+            print("No proxies fetched from any source")
+    
+    def get_next_proxy(self):
+        """Get the next proxy from the list"""
+        if not self.proxies:
+            self.fetch_proxies()
+            
+        if not self.proxies:
+            return None
+            
+        proxy = self.proxies[self.proxy_index]
+        self.proxy_index = (self.proxy_index + 1) % len(self.proxies)
+        return proxy
+    
+    def process_request(self, request, spider):
+        # Skip proxy rotation if flagged
+        if 'no_proxy' in request.meta:
+            return
+            
+        proxy = self.get_next_proxy()
+        if proxy:
+            request.meta['proxy'] = proxy
+            request.meta['proxy_index'] = self.proxy_index
+            print(f"Using proxy: {proxy}")
+    
+    def process_response(self, request, response, spider):
+        # If the response is successful, return it
+        if response.status < 400:
+            return response
+            
+        # If we get an error, try another proxy
+        proxy = request.meta.get('proxy')
+        if proxy:
+            # Track the number of retries for this proxy
+            self.retry_count[proxy] = self.retry_count.get(proxy, 0) + 1
+            
+            # If we've exceeded the retry limit for this proxy, remove it
+            if self.retry_count[proxy] >= self.max_retry_times:
+                print(f"Removing failed proxy: {proxy}")
+                if proxy in self.proxies:
+                    self.proxies.remove(proxy)
+                
+        # Let RetryMiddleware handle the retry
+        return response
+    
+    def process_exception(self, request, exception, spider):
+        # Handle proxy errors
+        proxy = request.meta.get('proxy')
+        if proxy:
+            print(f"Proxy error: {proxy}, Exception: {exception}")
+            
+            # Remove the problematic proxy
+            if proxy in self.proxies:
+                self.proxies.remove(proxy)
+                
+            # Try a new proxy
+            request.meta['proxy'] = self.get_next_proxy()
+            
+            # Don't retry the request here, let RetryMiddleware do it
+            return None
+
+
+class CustomRetryMiddleware(RetryMiddleware):
+    """
+    Custom retry middleware that works with our proxy rotation system
+    """
+    
+
+    def __init__(self, settings):
+        super().__init__(settings)
+        # Import the exceptions that should trigger a retry
+        from twisted.internet.error import TimeoutError, DNSLookupError, ConnectionRefusedError, ConnectionDone, ConnectError, ConnectionLost, TCPTimedOutError
+        from twisted.web.client import ResponseFailed
+        from scrapy.core.downloader.handlers.http11 import TunnelError
+        
+        self.EXCEPTIONS_TO_RETRY = (
+            TimeoutError, 
+            DNSLookupError, 
+            ConnectionRefusedError, 
+            ConnectionDone, 
+            ConnectError, 
+            ConnectionLost, 
+            TCPTimedOutError,
+            ResponseFailed, 
+            TunnelError
+        )
+
+        # Define retry HTTP status codes
+        self.retry_codes = settings.getlist('RETRY_HTTP_CODES', [500, 502, 503, 504, 408, 429, 403])
+
+    def process_response(self, request, response, spider):
+        if request.meta.get('dont_retry', False):
+            return response
+            
+        if response.status in self.retry_codes:
+            reason = response_status_message(response.status)
+            # Remove the current proxy from meta to get a new one
+            if 'proxy' in request.meta:
+                del request.meta['proxy']
+            return self._retry(request, reason, spider) or response
+            
+        return response
+    
+    def process_exception(self, request, exception, spider):
+        if isinstance(exception, self.EXCEPTIONS_TO_RETRY) and not request.meta.get('dont_retry', False):
+            # Remove the current proxy from meta to get a new one
+            if 'proxy' in request.meta:
+                del request.meta['proxy']
+            return self._retry(request, exception, spider)
